@@ -1,5 +1,5 @@
 # Loan-Default-Prediction
-In this project, I leveraged a loan dataset to predict the probability of defaulting using various machine learning techniques. After performing variable selection, I fitted and compared multiple models based on their accuracy and AUC scores. Additionally, I implemented a user input feature that allows banks, companies, or lenders to input specific variables and obtain a default probability for potential borrowers.
+In this project, I leveraged a loan dataset to predict the probability of defaulting using various machine learning techniques. After performing MICE imputation and Elastic Net for variable selection, I fitted and compared multiple models based on their accuracy and AUC scores. Additionally, I implemented a user input feature that allows banks, companies, or lenders to input specific variables and obtain a default probability for potential borrowers.
 Each model attempts to balance the trade-off between complexity, accuracy, and the risk of overfitting. This tool is valuable for enhancing decision-making in loan approvals and can aid companies and banks in conducting more effective risk analysis.
 
 | Method                | Accuracy | Sensitivity | Specificity | AUC   |
