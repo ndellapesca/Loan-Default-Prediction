@@ -1,0 +1,389 @@
+---
+title: "Work"
+output: html_document
+date: "2024-08-07"
+---
+
+```{r}
+library(readr)
+library(data.table)
+library(tidyverse)
+library(ggplot2)
+library(Matching)
+library(MatchIt)
+library(dplyr)
+library(glmnet)
+library(caret)
+library(cobalt)
+library(randomForest)
+library(pROC)
+```
+
+```{r}
+loan_large <- read_csv("Loan_Default.csv")
+View(Loan_Default)
+```
+
+```{r}
+#Missingness Check
+missing_percentage <- sapply(loan_mice, function(x) sum(is.na(x)) / length(x) * 100)
+
+# Print the result
+print(missing_percentage)
+```
+
+```{r}
+set.seed(1289)
+s1 <- loan_large %>%
+  filter(Status == 1) %>%
+  sample_n(5000)
+
+# Sample 5,000 observations with Status = 0
+s0 <- loan_large %>%
+  filter(Status == 0) %>%
+  sample_n(5000)
+
+loan<- bind_rows(s1, s0)
+
+```
+
+```{r}
+#Exploratory Data Analysis
+sum(loan$Status)
+loan %>%
+  ggplot() + aes(x = income, bins = 30) + geom_histogram(fill = 'red') + facet_wrap(~Status)
+summary(loan$income)
+
+
+```
+```{r}
+library(VIM)
+library(mice)
+set.seed(1287)
+#K-Nearest Neighbors
+loan_f <-  kNN(loan, metric = NULL, k = 5, imp_var = FALSE)
+
+#MICE
+loan_m <- mice(loan, m = 5, method = 'pmm')
+loan_mice <- complete(loan_m, 1)
+
+loan_m <- mice(loan, m = 5, method = 'pmm', maxit = 10)
+loan_mice <- complete(loan_m, 1)
+
+loan_mice <- na.omit(loan_mice)
+
+
+
+```
+
+
+
+```{r}
+loan_no_default <- subset(loan_mice, select = -c(Status, ID))
+#Lasso
+x <- as.matrix(loan_no_default)
+y <- loan_mice$Status
+
+lasso_model <- cv.glmnet(x, y, family = "binomial", alpha = 1)
+best_lambda <- lasso_model$lambda.min
+
+final_lasso_model <- glmnet(x, y, family = "binomial", alpha = 1, lambda = best_lambda)
+
+coef(final_lasso_model)
+```
+
+```{r}
+#Ridge
+ridge_model <- cv.glmnet(x, y, family = "binomial", alpha = 0)
+best_lambda <- lasso_model$lambda.min
+
+final_ridge_model <- glmnet(x, y, family = "binomial", alpha = 0, lambda = best_lambda)
+
+coef(final_ridge_model)
+```
+
+```{r}
+#Elastic Net
+
+elastic_model <- cv.glmnet(x, y, family = "binomial", alpha = 0.5)
+best_lambda <- elastic_model$lambda.min
+
+final_elastic_model <- glmnet(x, y, family = "binomial", alpha = 0.5, lambda = best_lambda)
+
+coef(final_elastic_model)
+```
+
+```{r}
+#Creating formula with selected covariates to fit into future models
+coefs <- coef(final_elastic_model)
+coefs_df <- as.data.frame(as.matrix(coefs))
+
+
+non_zero_coefs <- coefs_df[coefs_df != 0, , drop = FALSE]
+non_zero_vars <- rownames(non_zero_coefs)[-1] 
+
+
+formula_string <- paste("Status ~", paste(non_zero_vars, collapse = " + "))
+
+formula <- as.formula(formula_string)
+```
+
+```{r}
+
+
+train_index <- createDataPartition(loan_mice$Status, p = 0.6, list = FALSE)
+
+data_train <- loan_mice[train_index, ]
+data_test <- loan_mice[-train_index, ]
+```
+
+```{r}
+#Logistic Regression
+set.seed(1287)
+data_test$Status <- as.factor(data_test$Status)
+data_train$Status <- as.factor(data_train$Status)
+log_model <- glm(formula, data = data_train, family = binomial)
+
+
+predicted_probabilities_test <- predict(log_model, newdata = data_test, type = "response")
+
+
+threshold <- 0.5
+predicted_classes_test <- ifelse(predicted_probabilities_test > threshold, "1", "0")
+
+
+predicted_classes_test <- factor(predicted_classes_test, levels = levels(data_test$Status))
+
+
+confusion_matrix_test <- confusionMatrix(predicted_classes_test, data_test$Status)
+print(confusion_matrix_test)
+
+accuracy_test <- confusion_matrix_test$overall['Accuracy']
+print(paste("Accuracy on test set:", accuracy_test))
+
+
+roc_curve <- roc(data_test$Status, predicted_probabilities_test)
+plot(roc_curve, main = "ROC Curve for Logistic Regression Model", col = "blue", lwd = 2)
+
+auc_value <- auc(roc_curve)
+print(paste("AUC:", auc_value))
+
+f1_score <- F_meas(predicted_classes_test, data_test$Status)
+print(paste("F1 Score:", f1_score))
+
+sum(loan_mice_f$Status)
+
+```
+
+```{r}
+#Seeing Probability Prediction Distribution
+summary(predicted_probabilities_test)
+hist(predicted_probabilities_test, breaks = 30, main = "Distribution of Predicted Probabilities",
+     xlab = "Predicted Probability", col = "lightblue", border = "black")
+
+
+```
+
+
+```{r}
+#Random Forest
+set.seed(1286)
+data_train$Status <- as.factor(data_train$Status)
+rf_model <- randomForest(formula, data = data_train, importance = TRUE, ntree = 2000)
+
+predicted_probabilities_test <- predict(rf_model, newdata = data_test, type = "prob")
+threshold <- 0.5
+predicted_classes_test <- ifelse(predicted_probabilities_test[, "1"] > threshold, "1", "0")
+
+
+data_test$Status <- as.factor(data_test$Status)
+
+
+predicted_classes_test <- factor(predicted_classes_test, levels = levels(data_test$Status))
+
+
+confusion_matrix_test <- confusionMatrix(predicted_classes_test, data_test$Status)
+print(confusion_matrix_test)
+
+
+accuracy_test <- confusion_matrix_test$overall['Accuracy']
+print(paste("Accuracy on test set:", accuracy_test))
+
+
+roc_curve <- roc(data_test$Status, predicted_probabilities_test[, "1"])
+
+
+auc_value <- auc(roc_curve)
+print(paste("AUC:", auc_value))
+
+
+plot(roc_curve, main = paste("ROC Curve (AUC =", round(auc_value, 2), ")"))
+
+
+
+```
+```{r}
+library(xgboost)
+X <- as.matrix(loan_mice[, non_zero_vars])
+y <- loan_mice$Status  
+
+set.seed(1286)
+train_index <- sample(1:nrow(X), 0.6 * nrow(X)) 
+X_train <- X[train_index,]
+y_train <- y[train_index]
+X_test <- X[-train_index,]
+y_test <- y[-train_index]
+
+dtrain <- xgb.DMatrix(data = X_train, label = y_train)
+dtest <- xgb.DMatrix(data = X_test, label = y_test)
+
+parameters <- list(
+  booster = "gbtree",
+  objective = "binary:logistic",
+  eval_metric = "auc",
+  eta = 0.1,
+  max_depth = 6,
+  subsample = 0.6,
+  colsample_bytree = 0.6
+)
+
+xgboost_model <- xgb.train(
+  params = parameters,
+  data = dtrain,
+  nrounds = 100,
+  watchlist = list(val = dtest, train = dtrain),
+  early_stopping_rounds = 10,
+  print_every_n = 10
+)
+
+predicted_probabilities <- predict(xgboost_model, newdata = dtest)
+predicted_classes <- ifelse(predicted_probabilities > 0.5, 1, 0)
+
+roc_curve <- roc(y_test, predicted_probabilities)
+auc_value <- auc(roc_curve)
+
+
+```
+```{r}
+#Confusion Matrix for xgboost model
+predicted_probabilities <- predict(xgboost_model, newdata = dtest)
+
+
+predicted_classes <- ifelse(predicted_probabilities > 0.5, 1, 0)
+
+
+y_test <- factor(y_test, levels = c(0, 1))
+predicted_classes <- factor(predicted_classes, levels = c(0, 1))
+
+
+confusion_matrix <- confusionMatrix(predicted_classes, y_test)
+
+
+print(confusion_matrix)
+
+
+roc_curve <- roc(y_test, predicted_probabilities)
+auc_value <- auc(roc_curve)
+print(auc_value)
+
+```
+
+```{r}
+#Support Vector Machine
+library(e1071)
+
+classifier = svm(formula, 
+                 data = data_train, 
+                 type = 'C-classification', 
+                 kernel = 'radial',
+                 cost = 5,
+                 gamma = 0.2,
+                 probability = TRUE
+                 ) 
+
+predictions <- predict(classifier, newdata = data_test, probability = TRUE)
+
+y_pred = predict(classifier, newdata = data_test) 
+predicted_probabilities <- attr(predictions, "probabilities")[,2]
+
+y_test_vector <- as.factor(data_test$Status)
+y_pred_vector <- as.factor(y_pred)
+
+roc_curve <- roc(y_test_vector, predicted_probabilities)
+auc_value <- auc(roc_curve)
+
+
+print(auc_value)
+
+
+
+cm_caret <- confusionMatrix(y_pred_vector, y_test_vector)
+
+print(cm_caret)
+```
+
+
+```{r}
+#Run this and input a loanee's data in order to get their probability of defaulting
+#This specific chunk uses the random forest model, but you can easily use the LR, XGB, or SVM models
+library(shiny)
+library(randomForest)
+
+ui <- fluidPage(
+  titlePanel("Loan Default Prediction"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      numericInput("loan_amount", "Loan Amount:", value = 166500),
+      numericInput("rate_of_interest", "Rate of Interest (%):", value = 4.750),
+      numericInput("Interest_rate_spread", "Interest Rate Spread:", value = 0.7140),
+      numericInput("Upfront_charges", "Upfront Charges:", value = 5186.56),
+      numericInput("term", "Loan Term in Months:", value = 360),
+      numericInput("property_value", "Property Value:", value = 178000),
+      numericInput("income", "Income:", value = 1980),
+      numericInput("Credit_Score", "Credit Score:", value = 807),
+      numericInput("LTV", "Loan-to-Value Ratio (%):", value = 93.53933),
+      numericInput("dtir1", "Debt-to-Income Ratio:", value = 55),
+      
+      actionButton("predict", "Predict Loan Default Probability")
+    ),
+    
+    mainPanel(
+      h3("Prediction Result"),
+      verbatimTextOutput("prediction_output")
+    )
+  )
+)
+
+
+server <- function(input, output) {
+  
+  prediction <- eventReactive(input$predict, {
+    new_data <- data.frame(
+      loan_amount = input$loan_amount,
+      rate_of_interest = input$rate_of_interest,
+      Interest_rate_spread = input$Interest_rate_spread,
+      Upfront_charges = input$Upfront_charges,
+      term = input$term,
+      property_value = input$property_value,
+      income = input$income,
+      Credit_Score = input$Credit_Score,
+      LTV = input$LTV,
+      dtir1 = input$dtir1
+    )
+    
+    prediction <- predict(rf_model, new_data, type = "prob")
+    
+    prediction[2]
+  })
+  
+  output$prediction_output <- renderPrint({
+    paste("The predicted probability of defaulting on the loan is:", round(prediction(), 4))
+  })
+}
+
+shinyApp(ui = ui, server = server)
+
+```
+
+
